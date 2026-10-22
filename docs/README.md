@@ -23,6 +23,7 @@ The Server Access Dashboard (S-A-D) is a full-stack web application designed to 
 - **Interactive Dashboard:** A paginated and sortable table view of all access logs.
 - **Powerful Filtering:** Filter logs by IP address, country, domain, or HTTP status code.
 - **Visual Summary:** A summary view shows the top-accessing countries at a glance.
+- **User Authentication:** A login page protects the dashboard. Passwords are hashed with bcrypt, and sessions use short-lived JWT access tokens with automatic refresh.
 - **Modern Frontend:** A responsive single-page application built with Vue.js and styled with Tailwind CSS.
 - **Robust Backend:** A high-performance API powered by FastAPI and SQLAlchemy.
 - **Simple Deployment:** Fully containerized and configured with a `docker-compose` file for a quick start.
@@ -69,7 +70,9 @@ Follow these steps to get the dashboard running on your server.
         environment:
           - DATABASE_URL=sqlite:////app/database/logs.db
           - LOG_DIRECTORY=/nginx_logs
-          - API_KEY=YOUR_API_KEY
+          - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+          - ADMIN_PASSWORD=${ADMIN_PASSWORD:?set a strong admin password}
+          - JWT_SECRET=${JWT_SECRET:?set a long random secret}
           - GEOIP_DATABASE_PATH=/app/database/GeoLite2-Country.mmdb
           - MAXMIND_LICENSE_KEY=YOUR_MAXMIND_LICENSE_KEY
           - LOG_COLLECTION_INTERVAL_MINUTES=${LOG_COLLECTION_INTERVAL_MINUTES:-90} # Default to 90 minutes
@@ -82,7 +85,6 @@ Follow these steps to get the dashboard running on your server.
           - 5577:80
         environment:
           - API_URL=YOUR_API_URL
-          - API_KEY=YOUR_API_KEY
         depends_on:
           - sad-backend
     ```
@@ -91,7 +93,9 @@ Follow these steps to get the dashboard running on your server.
 
     Before starting the containers, you need to configure the environment variables in your `docker-compose.yml` file.
 
-    - **`API_KEY`**: Set a secure, random string for both the `sad-backend` and `sad-frontend` services. This key protects your API from unauthorized access. The value must be identical for both services.
+    - **`ADMIN_USERNAME`**: (Optional) The username for the dashboard login. Defaults to `admin`.
+    - **`ADMIN_PASSWORD`**: (**Mandatory**) The password for the dashboard login. Set this to a strong, random string. The container will fail to start if this is not set.
+    - **`JWT_SECRET`**: (**Mandatory**) A long, random string used to sign authentication tokens. Generate one with `openssl rand -hex 32`. The container will fail to start if this is not set.
     - **`API_URL`**: In the `sad-frontend` service, set this to the external URL of your backend, e.g., `http://YOUR_SERVER_IP:8000`.
     - **`MAXMIND_LICENSE_KEY`**: This is a **mandatory** free license key from MaxMind, which is required to download the GeoIP database for country lookups.
 
@@ -110,7 +114,9 @@ Follow these steps to get the dashboard running on your server.
     ```
 
 4.  **Access the Dashboard:**
-    The application is now accessible at `http://YOUR_SERVER_IP:5577`. After the first start, it may take a few minutes for the initial log entries to be processed and become visible.
+    The application is now accessible at `http://YOUR_SERVER_IP:5577`. You will be redirected to a login page. Enter the `ADMIN_USERNAME` and `ADMIN_PASSWORD` credentials you configured above. After the first start, it may take a few minutes for the initial log entries to be processed and become visible.
+
+    Authentication uses signed JWT tokens. Your session persists across page reloads via browser storage, and access tokens are automatically refreshed when they expire. Click the "Logout" button in the dashboard header to sign out.
 
 ## 📄 License
 
