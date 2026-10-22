@@ -4,6 +4,8 @@ import CountryFlag from 'vue-country-flag-next'
 import { initApiClient, getClient } from '../api/client'
 import { useRouter } from 'vue-router'
 import { logout } from '../auth/store'
+import { TimeSeriesChart, SiteCountryChart, TopSitesChart, StatusChart } from '../components/charts'
+import { applyPalette } from '../lib/viz/palette'
 
 // --- Data & Loading States ---
 const logs = ref([])
@@ -17,6 +19,13 @@ const filterButtonLoadingDelay = 500
 
 const error = ref(null)
 const lastUpdateTime = ref(null)
+
+// --- Chart Data States ---
+const timeseriesPoints = ref([])
+const siteCountryPairs = ref([])
+const statusPoints = ref([])
+const chartsLoading = ref(false)
+const chartDays = ref(30)
 
 // --- Filtering & Sorting States ---
 const filterIp = ref('')
@@ -69,6 +78,21 @@ const formattedLastUpdateTime = computed(() => {
 
 // --- State: API client readiness ---
 const clientReady = ref(false)
+
+// --- Computed: chart query params (days + currently applied filters) ---
+const chartParams = computed(() => {
+  const p = {
+    days: chartDays.value,
+    domain: filterDomain.value || null,
+    country: filterCountry.value || null,
+    status_code: filterStatusCode.value !== null ? filterStatusCode.value : null,
+  }
+  const out = {}
+  for (const [k, v] of Object.entries(p)) {
+    if (v !== null && v !== undefined && v !== '') out[k] = v
+  }
+  return out
+})
 
 // --- Fetch Logs and Summary Data (GET Requests) ---
 async function fetchData(triggeredByButton = false) {
@@ -142,6 +166,52 @@ async function fetchData(triggeredByButton = false) {
       currentError = currentError ? `${currentError} | ${summaryError}` : summaryError
       summary.value = []
     }
+
+    // Chart data - these endpoints share the same filter surface (domain,
+    // country, status code) so the charts always agree with the log table.
+    chartsLoading.value = true
+    const timeseriesPromise = client.get('/logs/summary/timeseries/', { params: chartParams.value })
+    const siteCountryPromise = client.get('/logs/summary/by-site-country/', { params: chartParams.value })
+    const statusPromise = client.get('/logs/summary/by-status/', { params: chartParams.value })
+    const [tsResult, scResult, stResult] = await Promise.allSettled([
+      timeseriesPromise,
+      siteCountryPromise,
+      statusPromise,
+    ])
+    if (tsResult.status === 'fulfilled' && Array.isArray(tsResult.value.data)) {
+      timeseriesPoints.value = tsResult.value.data
+    } else {
+      timeseriesPoints.value = []
+      const err = tsResult.status === 'rejected' ? tsResult.reason : null
+      if (err) {
+        currentError = currentError
+          ? `${currentError} | API error (Time series): ${err.response?.status || 'Network'}`
+          : `API error (Time series): ${err.response?.status || 'Network'}`
+      }
+    }
+    if (scResult.status === 'fulfilled' && Array.isArray(scResult.value.data)) {
+      siteCountryPairs.value = scResult.value.data
+    } else {
+      siteCountryPairs.value = []
+      const err = scResult.status === 'rejected' ? scResult.reason : null
+      if (err) {
+        currentError = currentError
+          ? `${currentError} | API error (Site x Country): ${err.response?.status || 'Network'}`
+          : `API error (Site x Country): ${err.response?.status || 'Network'}`
+      }
+    }
+    if (stResult.status === 'fulfilled' && Array.isArray(stResult.value.data)) {
+      statusPoints.value = stResult.value.data
+    } else {
+      statusPoints.value = []
+      const err = stResult.status === 'rejected' ? stResult.reason : null
+      if (err) {
+        currentError = currentError
+          ? `${currentError} | API error (Status): ${err.response?.status || 'Network'}`
+          : `API error (Status): ${err.response?.status || 'Network'}`
+      }
+    }
+    chartsLoading.value = false
 
     if (currentError) {
       error.value = currentError
@@ -397,6 +467,7 @@ function updateHtmlClass() {
   } else {
     document.documentElement.classList.remove('dark')
   }
+  applyPalette(isDarkMode.value)
 }
 
 function formatCount(number) {
@@ -549,10 +620,8 @@ onBeforeUnmount(() => {
       >
     </div>
 
-    <div
-      v-if="clientReady"
-      class="main-content flex flex-col lg:flex-row lg:items-start gap-6"
-    >
+    <div v-if="clientReady" class="main-content flex flex-col lg:flex-row gap-6">
+      <!-- Filter sidebar on the left -->
       <aside class="left-sidebar w-full lg:w-80 xl:w-96 flex-shrink-0 space-y-6">
         <div class="controls-container bg-white dark:bg-gray-800 shadow-lg rounded p-4">
           <h3
@@ -703,6 +772,41 @@ onBeforeUnmount(() => {
         </section>
       </aside>
 
+      <!-- Main column: charts on top, logs below. -->
+      <div class="flex flex-col flex-1 min-w-0 gap-6">
+      <!-- Dashboard charts section, full width above the log table. -->
+      <section class="charts-section w-full space-y-6 mb-6">
+        <h2 class="pb-2 mb-4 text-lg font-semibold text-gray-700 border-b border-gray-200 dark:text-gray-200 dark:border-gray-700">
+          Dashboard Insights
+        </h2>
+        <TimeSeriesChart
+          :points="timeseriesPoints"
+          title="Accesses over time"
+          subtitle="Bucketed by day, grouped by site (top 6 domains)"
+          :height="320"
+        />
+        <SiteCountryChart
+          :pairs="siteCountryPairs"
+          title="Which site from which country"
+          subtitle="Stacked by country, top 8 sites and top 5 countries"
+          :height="360"
+        />
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <TopSitesChart
+            :points="timeseriesPoints"
+            title="Top sites"
+            subtitle="Top 10 sites by total accesses"
+            :height="400"
+          />
+          <StatusChart
+            :points="statusPoints"
+            title="HTTP status codes"
+            subtitle="Access counts per status code"
+            :height="400"
+          />
+        </div>
+      </section>
+
       <section class="logs flex-1 bg-white dark:bg-gray-800 shadow-md rounded p-5 min-w-0">
         <div
           class="pb-2 mb-4 flex flex-wrap items-center justify-between gap-4 border-b border-gray-200 dark:border-gray-700"
@@ -849,6 +953,7 @@ onBeforeUnmount(() => {
         </p>
         <p v-else class="mt-4 text-sm text-gray-500 dark:text-gray-400">Loading Logs...</p>
       </section>
+    </div>
     </div>
     <div v-else-if="!clientReady" class="text-center mt-10 text-gray-500 dark:text-gray-400">
       <p>Loading application...</p>
