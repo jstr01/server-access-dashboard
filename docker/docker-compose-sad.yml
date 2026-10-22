@@ -11,7 +11,13 @@ services:
     environment:
       - DATABASE_URL=sqlite:////app/database/logs.db
       - LOG_DIRECTORY=/nginx_logs
-      - API_KEY=YOUR_API_KEY
+      - ADMIN_USERNAME=${ADMIN_USERNAME:-admin}
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:?set a strong admin password}
+      - JWT_SECRET=${JWT_SECRET:?set a long random secret}
+      # CORS_ORIGINS restricts which frontend origins may call the API.
+      # Defaults to http://localhost:5577; set to your frontend's origin
+      # for production (e.g. http://YOUR_SERVER_IP:5577).
+      - CORS_ORIGINS=${CORS_ORIGINS:-http://localhost:5577}
       - GEOIP_DATABASE_PATH=/app/database/GeoLite2-Country.mmdb
       - MAXMIND_LICENSE_KEY=YOUR_MAXMIND_LICENSE_KEY
       - LOG_COLLECTION_INTERVAL_MINUTES=${LOG_COLLECTION_INTERVAL_MINUTES:-90} # Default to 90 minutes
@@ -24,6 +30,5 @@ services:
       - 5577:80
     environment:
       - API_URL=YOUR_API_URL
-      - API_KEY=YOUR_API_KEY
     depends_on:
       - sad-backend

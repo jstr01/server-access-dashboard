@@ -1,4 +1,4 @@
-from sqlalchemy import create_engine, Column, Integer, String, DateTime
+from sqlalchemy import create_engine, Column, Integer, String, DateTime, Boolean
 
 try:
     from sqlalchemy.orm import declarative_base
@@ -15,6 +15,7 @@ from datetime import datetime
 import os
 from dotenv import load_dotenv
 from typing import List
+
 
 dotenv_path = os.path.join(os.path.dirname(__file__), ".env")
 load_dotenv(dotenv_path=dotenv_path)
@@ -35,6 +36,15 @@ class LogEntry(Base):
     raw_log = Column(String)
 
 
+class User(Base):
+    __tablename__ = "users"
+    id = Column(Integer, primary_key=True, index=True)
+    username = Column(String, unique=True, index=True, nullable=False)
+    password_hash = Column(String, nullable=False)
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, nullable=False)
+
+
 class LogEntryRead(BaseModel):
     id: int
     ip_address: str
@@ -44,6 +54,15 @@ class LogEntryRead(BaseModel):
     request_path: str | None
     domain: str | None
     raw_log: str
+
+    class Config:
+        from_attributes = True
+
+
+class UserRead(BaseModel):
+    id: int
+    username: str
+    is_active: bool
 
     class Config:
         from_attributes = True
