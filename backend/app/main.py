@@ -109,11 +109,16 @@ app = FastAPI(
 )
 
 # --- CORS Middleware ---
-origins = ["*"]
+# Origins the frontend lives on (cross-origin). Bearer-token auth uses the
+# Authorization header, not cookies, so credentials=False is correct; leave it
+# True only if you later switch to cookie sessions. Restrict via
+# CORS_ORIGINS="http://FE:5577,https://FE.example.com" in compose.
+_cors_origins_raw = os.getenv("CORS_ORIGINS", "http://localhost:5577")
+origins = [o.strip() for o in _cors_origins_raw.split(",") if o.strip()]
 app.add_middleware(
     CORSMiddleware,
     allow_origins=origins,
-    allow_credentials=True,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
@@ -138,8 +143,8 @@ async def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(auth.get_db),
 ):
-    user = db.query(models.User).filter(models.User.username == form_data.username).first()
-    if not user or not auth.verify_password(form_data.password, user.password_hash):
+    user = auth.authenticate_user(db, form_data.username, form_data.password)
+    if user is None:
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid username or password",

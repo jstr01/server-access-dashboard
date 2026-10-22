@@ -96,6 +96,8 @@ Follow these steps to get the dashboard running on your server.
     - **`ADMIN_USERNAME`**: (Optional) The username for the dashboard login. Defaults to `admin`.
     - **`ADMIN_PASSWORD`**: (**Mandatory**) The password for the dashboard login. Set this to a strong, random string. The container will fail to start if this is not set.
     - **`JWT_SECRET`**: (**Mandatory**) A long, random string used to sign authentication tokens. Generate one with `openssl rand -hex 32`. The container will fail to start if this is not set.
+    - **`ADMIN_PASSWORD`**: (**Mandatory**) The password for the dashboard admin user. Bcrypt-hashed at startup and stored in the database; it is never stored in plaintext. The container will fail to start if this is not set.
+    - **`CORS_ORIGINS`**: (**Recommended**) A comma-separated list of frontend origins allowed to call the backend API, e.g. `http://YOUR_SERVER_IP:5577`. Defaults to `http://localhost:5577`. Since authentication uses a `Bearer` token in the `Authorization` header (not cookies), cross-origin credential access is not permitted by default.
     - **`API_URL`**: In the `sad-frontend` service, set this to the external URL of your backend, e.g., `http://YOUR_SERVER_IP:8000`.
     - **`MAXMIND_LICENSE_KEY`**: This is a **mandatory** free license key from MaxMind, which is required to download the GeoIP database for country lookups.
 

@@ -11,6 +11,7 @@ from typing import Optional
 
 import bcrypt
 import jwt
+from dotenv import load_dotenv
 from fastapi import Depends, HTTPException, status
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from sqlalchemy.orm import Session
@@ -19,6 +20,11 @@ from .models import User, UserRead
 from .database import SessionLocal
 
 logger = logging.getLogger(__name__)
+
+# --- Load .env early so env vars are available regardless of import order ---
+_dotenv_path = os.path.join(os.path.dirname(__file__), ".env")
+if os.path.exists(_dotenv_path):
+    load_dotenv(dotenv_path=_dotenv_path)
 
 # --- Configuration --------------------------------------------------------
 
@@ -54,6 +60,33 @@ def verify_password(plain: str, hashed: str) -> bool:
         return bcrypt.checkpw(plain.encode("utf-8"), hashed.encode("utf-8"))
     except (ValueError, TypeError):
         return False
+
+
+_dummy_hash: Optional[str] = None
+
+
+def _dummy_password_hash() -> str:
+    """A bcrypt hash of a random value, lazily computed once and reused to
+    equalize the response time of login attempts against existing vs.
+    non-existing usernames (preventing user enumeration via timing)."""
+    global _dummy_hash
+    if _dummy_hash is None:
+        _dummy_hash = hash_password(secrets.token_urlsafe(32))
+    return _dummy_hash
+
+
+def authenticate_user(db: Session, username: str, password: str) -> Optional[User]:
+    """Look up a user and verify the password.
+
+    A bcrypt verification is always run — even when the username does not
+    exist — so response timing does not leak which usernames are registered.
+    """
+    user = db.query(User).filter(User.username == username).first()
+    password_hash = user.password_hash if user else _dummy_password_hash()
+    password_ok = verify_password(password, password_hash)
+    if not user or not password_ok:
+        return None
+    return user
 
 
 # --- JWT token helpers ----------------------------------------------------

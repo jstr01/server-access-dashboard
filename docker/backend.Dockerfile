@@ -68,8 +68,12 @@ ENV GEOIP_DATABASE_PATH=/app/database/GeoLite2-Country.mmdb
 ENV LOG_DIRECTORY=/nginx_logs
 ENV NGINX_LOG_FORMAT='[$time_local] - - $status - $request_method $scheme $host $request_uri [Client $remote_addr] [Length $body_bytes_sent] [Gzip $gzip_info] [Sent-to $upstream_info] "$http_referer" "$http_user_agent"'
 ENV ADMIN_USERNAME="admin"
-ENV ADMIN_PASSWORD="change_me"
-ENV JWT_SECRET="change_me"
+# ADMIN_PASSWORD and JWT_SECRET MUST be set at runtime (via docker-compose
+# or `docker run -e`). Leaving them unset here is intentional: a hardcoded
+# default would silently disable the app's own "not set" warnings and ship
+# with publicly-known credentials.
+ENV ADMIN_PASSWORD=""
+ENV JWT_SECRET=""
 ENV LOG_COLLECTION_INTERVAL_MINUTES="10"
 
 # Expose port
