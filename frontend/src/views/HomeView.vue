@@ -620,43 +620,8 @@ onBeforeUnmount(() => {
       >
     </div>
 
-    <div
-      v-if="clientReady"
-      class="main-content flex flex-col lg:flex-row lg:items-start gap-6"
-    >
-      <!-- Dashboard charts section, full width above the sidebar + log table. -->
-      <section class="charts-section w-full space-y-6 mb-6">
-        <h2 class="pb-2 mb-4 text-lg font-semibold text-gray-700 border-b border-gray-200 dark:text-gray-200 dark:border-gray-700">
-          Dashboard Insights
-        </h2>
-        <TimeSeriesChart
-          :points="timeseriesPoints"
-          title="Accesses over time"
-          subtitle="Bucketed by day, grouped by site (top 6 domains)"
-          :height="320"
-        />
-        <SiteCountryChart
-          :pairs="siteCountryPairs"
-          title="Which site from which country"
-          subtitle="Stacked by country, top 8 sites and top 5 countries"
-          :height="360"
-        />
-        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-          <TopSitesChart
-            :points="timeseriesPoints"
-            title="Top sites"
-            subtitle="Top 10 sites by total accesses"
-            :height="400"
-          />
-          <StatusChart
-            :points="statusPoints"
-            title="HTTP status codes"
-            subtitle="Access counts per status code"
-            :height="400"
-          />
-        </div>
-      </section>
-
+    <div v-if="clientReady" class="main-content flex flex-col lg:flex-row gap-6">
+      <!-- Filter sidebar on the left -->
       <aside class="left-sidebar w-full lg:w-80 xl:w-96 flex-shrink-0 space-y-6">
         <div class="controls-container bg-white dark:bg-gray-800 shadow-lg rounded p-4">
           <h3
@@ -807,6 +772,41 @@ onBeforeUnmount(() => {
         </section>
       </aside>
 
+      <!-- Main column: charts on top, logs below. -->
+      <div class="flex flex-col flex-1 min-w-0 gap-6">
+      <!-- Dashboard charts section, full width above the log table. -->
+      <section class="charts-section w-full space-y-6 mb-6">
+        <h2 class="pb-2 mb-4 text-lg font-semibold text-gray-700 border-b border-gray-200 dark:text-gray-200 dark:border-gray-700">
+          Dashboard Insights
+        </h2>
+        <TimeSeriesChart
+          :points="timeseriesPoints"
+          title="Accesses over time"
+          subtitle="Bucketed by day, grouped by site (top 6 domains)"
+          :height="320"
+        />
+        <SiteCountryChart
+          :pairs="siteCountryPairs"
+          title="Which site from which country"
+          subtitle="Stacked by country, top 8 sites and top 5 countries"
+          :height="360"
+        />
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+          <TopSitesChart
+            :points="timeseriesPoints"
+            title="Top sites"
+            subtitle="Top 10 sites by total accesses"
+            :height="400"
+          />
+          <StatusChart
+            :points="statusPoints"
+            title="HTTP status codes"
+            subtitle="Access counts per status code"
+            :height="400"
+          />
+        </div>
+      </section>
+
       <section class="logs flex-1 bg-white dark:bg-gray-800 shadow-md rounded p-5 min-w-0">
         <div
           class="pb-2 mb-4 flex flex-wrap items-center justify-between gap-4 border-b border-gray-200 dark:border-gray-700"
@@ -953,6 +953,7 @@ onBeforeUnmount(() => {
         </p>
         <p v-else class="mt-4 text-sm text-gray-500 dark:text-gray-400">Loading Logs...</p>
       </section>
+    </div>
     </div>
     <div v-else-if="!clientReady" class="text-center mt-10 text-gray-500 dark:text-gray-400">
       <p>Loading application...</p>
