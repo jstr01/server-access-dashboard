@@ -1,17 +1,9 @@
 <script setup>
 import { ref, onMounted, computed, watch, onBeforeUnmount, nextTick } from 'vue'
-import axios from 'axios'
 import CountryFlag from 'vue-country-flag-next'
-
-// --- State for configuration ---
-const apiBaseUrl = ref('')
-const apiKey = ref('')
-const configLoading = ref(true)
-const configError = ref(null)
-const configSource = ref(null)
-
-// --- Axios instance (created after loading config) ---
-let apiClient = null
+import { initApiClient, getClient } from '../api/client'
+import { useRouter } from 'vue-router'
+import { logout } from '../auth/store'
 
 // --- Data & Loading States ---
 const logs = ref([])
@@ -75,74 +67,14 @@ const formattedLastUpdateTime = computed(() => {
   })
 })
 
-// --- Creates the Axios instance ---
-function createApiClient() {
-  if (!apiBaseUrl.value) {
-    console.error('Cannot create apiClient: apiBaseUrl is missing.')
-    return null
-  }
-  if (!apiKey.value) {
-    console.warn('Creating apiClient without API Key.')
-  }
-  return axios.create({
-    baseURL: apiBaseUrl.value,
-    headers: { 'X-API-Key': apiKey.value || '' },
-  })
-}
-
-// --- Loads configuration from /config.json ---
-async function loadConfigFromJson() {
-  configLoading.value = true
-  configError.value = null
-  apiClient = null
-  try {
-    console.log('Trying to load configuration from /config.json...')
-    const response = await fetch('/config.json')
-    const contentType = response.headers.get('content-type')
-    if (!response.ok || !contentType || !contentType.includes('application/json')) {
-      let errorBody = ''
-      try {
-        errorBody = await response.text()
-      } catch (e) {
-        /* ignore */
-      }
-      throw new Error(
-        `Configuration file '/config.json' could not be loaded or parsed. Status: ${response.status}. Body: ${errorBody}`,
-      )
-    }
-    const config = await response.json()
-    console.log('Loaded configuration from JSON:', config)
-    if (!config || typeof config.apiUrl !== 'string' || !config.apiUrl) {
-      throw new Error("'apiUrl' not found as a valid string in config.json.")
-    }
-    if (!config || typeof config.apiKey !== 'string') {
-      console.warn("'apiKey' not found as a valid string in config.json.")
-      apiKey.value = ''
-    } else {
-      apiKey.value = config.apiKey
-    }
-    apiBaseUrl.value = config.apiUrl
-    configSource.value = 'json'
-    console.log('API Base URL (json):', apiBaseUrl.value)
-    console.log('API Key (json):', apiKey.value ? 'Yes' : 'No (empty)')
-    apiClient = createApiClient()
-    if (!apiClient) throw new Error('Error creating API client after loading JSON config.')
-  } catch (err) {
-    console.error('Error loading JSON configuration:', err)
-    configError.value = `Error loading backend configuration from /config.json: ${err.message}.`
-    apiBaseUrl.value = ''
-    apiKey.value = ''
-  } finally {
-    configLoading.value = false
-  }
-}
+// --- State: API client readiness ---
+const clientReady = ref(false)
 
 // --- Fetch Logs and Summary Data (GET Requests) ---
 async function fetchData(triggeredByButton = false) {
-  if (configError.value || !apiClient) {
-    if (!configError.value) {
-      error.value = 'API Client not initialized.'
-    }
+  const client = getClient()
+  if (!client) {
+    error.value = 'API Client not initialized.'
     return
   }
 
@@ -173,11 +105,11 @@ async function fetchData(triggeredByButton = false) {
     sort_by: sortKey.value,
     sort_dir: sortDirection.value,
   }
-  const filteredParams = Object.fromEntries(Object.entries(params).filter(([_, v]) => v !== null))
+  const filteredParams = Object.fromEntries(Object.entries(params).filter(([, value]) => value !== null))
 
   try {
-    const logsPromise = apiClient.get('/logs/', { params: filteredParams })
-    const summaryPromise = apiClient.get('/logs/summary/by-country/')
+    const logsPromise = client.get('/logs/', { params: filteredParams })
+    const summaryPromise = client.get('/logs/summary/by-country/')
     const [logsResult, summaryResult] = await Promise.allSettled([logsPromise, summaryPromise])
     let currentError = null
 
@@ -233,10 +165,11 @@ async function fetchData(triggeredByButton = false) {
 
 // --- Function to check the collection status ---
 async function checkCollectionStatus() {
-  if (!apiClient) return 'error'
+  const client = getClient()
+  if (!client) return 'error'
   try {
     console.log('Polling: Checking status...')
-    const response = await apiClient.get('/collect-logs/status')
+    const response = await client.get('/collect-logs/status')
     const status = response.data?.status
     console.log('Polling: Status received:', status)
     return status
@@ -249,8 +182,9 @@ async function checkCollectionStatus() {
 
 // --- Collect Logs (POST), Poll Status, and Refresh Data ---
 async function collectAndRefreshLogs() {
-  if (configError.value || !apiClient) {
-    error.value = configError.value || 'API client not initialized.'
+  const client = getClient()
+  if (!client) {
+    error.value = 'API client not initialized.'
     return
   }
   if (isCollectingAndRefreshing.value) {
@@ -266,8 +200,8 @@ async function collectAndRefreshLogs() {
   let pollingTimeoutId = null
 
   try {
-    console.log('API Collect Logs URL:', apiClient.defaults.baseURL + collectUrl)
-    const postResponse = await apiClient.post(collectUrl)
+    console.log('API Collect Logs URL:', client.defaults.baseURL + collectUrl)
+    const postResponse = await client.post(collectUrl)
     console.log('Collect logs POST response:', postResponse.data)
 
     if (postResponse.status === 202 && postResponse.data?.message?.includes('started')) {
@@ -312,15 +246,15 @@ async function collectAndRefreshLogs() {
     }
   } catch (err) {
     console.error('collectAndRefreshLogs: Error during POST request:', err)
-    if (axios.isAxiosError(err)) {
+    if (err.isAxiosError) {
       if (err.response?.status === 401 || err.response?.status === 403) {
-        error.value = `API Auth Error (Collect): ${err.response.status} - ${err.response.data?.detail || 'Key invalid/missing'}.`
+        error.value = `API Auth Error (Collect): ${err.response.status} - ${err.response.data?.detail || 'Not authenticated'}.`
       } else if (err.response?.status === 409) {
         error.value = 'Log collection is already running (reported by server).'
       } else if (err.response) {
         error.value = `API Error (Collect): ${err.response.status}.`
       } else if (err.request) {
-        error.value = `No response (Collect) from ${apiClient?.defaults?.baseURL}.`
+        error.value = `No response (Collect) from ${client?.defaults?.baseURL}.`
       } else {
         error.value = `Request Error (Collect): ${err.message}`
       }
@@ -391,14 +325,14 @@ function nextPage() {
 function startAutoUpdate() {
   stopAutoUpdate()
   if (autoUpdateEnabled.value && autoUpdateInterval.value > 0) {
-    if (!configError.value && apiClient) {
+    if (getClient()) {
       autoUpdateIntervalId = setInterval(() => {
         console.log('Auto-Update: Fetching data...')
         fetchData(false)
       }, autoUpdateInterval.value * 1000)
       console.log(`Auto-Update started (Interval: ${autoUpdateInterval.value}s)`)
     } else {
-      console.warn('Auto-Update not started: Configuration missing or invalid.')
+      console.warn('Auto-Update not started: API client not initialized.')
     }
   }
 }
@@ -445,10 +379,17 @@ function formatTimestamp(utcTimestamp) {
     return utcTimestamp
   }
 }
+const router = useRouter()
+
 function toggleDarkMode() {
   isDarkMode.value = !isDarkMode.value
   localStorage.setItem('darkMode', isDarkMode.value)
   updateHtmlClass()
+}
+
+async function handleLogout() {
+  logout()
+  await router.push('/login')
 }
 function updateHtmlClass() {
   if (isDarkMode.value) {
@@ -476,31 +417,12 @@ function formatCount(number) {
 // --- Lifecycle Hooks ---
 onMounted(async () => {
   updateHtmlClass()
-  const envApiUrl = import.meta.env.VITE_API_BASE_URL
-  const envApiKey = import.meta.env.VITE_API_KEY
-  if (envApiUrl && typeof envApiKey === 'string') {
-    console.log('Configuration loaded from .env variables.')
-    apiBaseUrl.value = envApiUrl
-    apiKey.value = envApiKey
-    configSource.value = 'env'
-    configLoading.value = false
-    apiClient = createApiClient()
-    if (!apiClient) {
-      configError.value = 'Error creating API client with .env configuration.'
-    }
-  } else {
-    console.log('No .env variables found, trying to load /config.json...')
-    await loadConfigFromJson()
+  await initApiClient()
+  clientReady.value = true
+  if (autoUpdateEnabled.value) {
+    startAutoUpdate()
   }
-  if (!configError.value && apiClient) {
-    if (autoUpdateEnabled.value) {
-      startAutoUpdate()
-    }
-    fetchData(false)
-  } else {
-    error.value = configError.value || 'Configuration could not be loaded.'
-    console.error('Initial data cannot be loaded:', error.value)
-  }
+  fetchData(false)
 })
 onBeforeUnmount(() => {
   stopAutoUpdate()
@@ -529,7 +451,7 @@ onBeforeUnmount(() => {
         </span>
         <button
           @click="collectAndRefreshLogs"
-          :disabled="isCollectingAndRefreshing || configLoading || !!configError || !apiClient"
+          :disabled="isCollectingAndRefreshing || !clientReady"
           title="Collect logs & refresh"
           class="p-2 rounded-full text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 dark:focus:ring-offset-gray-900 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
         >
@@ -585,28 +507,32 @@ onBeforeUnmount(() => {
             />
           </svg>
         </button>
+        <button
+          @click="handleLogout"
+          title="Log out"
+          class="flex items-center gap-1.5 rounded px-2 py-1.5 text-sm text-gray-500 dark:text-gray-400 hover:bg-gray-200 dark:hover:bg-gray-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-red-500 dark:focus:ring-offset-gray-900 transition-colors"
+        >
+          <svg
+            xmlns="http://www.w3.org/2000/svg"
+            class="w-5 h-5"
+            fill="none"
+            viewBox="0 0 24 24"
+            stroke="currentColor"
+            stroke-width="2"
+          >
+            <path
+              stroke-linecap="round"
+              stroke-linejoin="round"
+              d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"
+            />
+          </svg>
+          <span class="hidden sm:inline">Logout</span>
+        </button>
       </div>
     </header>
 
     <div
-      v-if="configLoading"
-      class="bg-yellow-100 border border-yellow-400 text-yellow-700 px-4 py-3 rounded relative mb-6"
-      role="status"
-    >
-      <span class="block sm:inline"
-        >Loading backend configuration... (Source: {{ configSource || 'Unknown' }})</span
-      >
-    </div>
-    <div
-      v-if="configError"
-      class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-6"
-      role="alert"
-    >
-      <strong class="font-bold">Konfigurationsfehler!</strong>
-      <span class="block sm:inline"> {{ configError }}</span>
-    </div>
-    <div
-      v-if="error && !configError"
+      v-if="error"
       class="bg-red-100 border border-red-400 text-red-700 px-4 py-3 rounded relative mb-6"
       role="alert"
     >
@@ -624,7 +550,7 @@ onBeforeUnmount(() => {
     </div>
 
     <div
-      v-if="!configLoading && !configError && apiClient"
+      v-if="clientReady"
       class="main-content flex flex-col lg:flex-row lg:items-start gap-6"
     >
       <aside class="left-sidebar w-full lg:w-80 xl:w-96 flex-shrink-0 space-y-6">
@@ -924,15 +850,8 @@ onBeforeUnmount(() => {
         <p v-else class="mt-4 text-sm text-gray-500 dark:text-gray-400">Loading Logs...</p>
       </section>
     </div>
-    <div v-else-if="!configLoading" class="text-center mt-10 text-gray-500 dark:text-gray-400">
-      <p>
-        The application cannot be loaded because the backend configuration is missing or invalid.
-      </p>
-      <p>
-        Source: {{ configSource || 'Unknown' }}. Error message:
-        {{ configError || 'No details' }}
-      </p>
-      <p>Please check the browser console and the Docker container logs for more details.</p>
+    <div v-else-if="!clientReady" class="text-center mt-10 text-gray-500 dark:text-gray-400">
+      <p>Loading application...</p>
     </div>
   </div>
 </template>
