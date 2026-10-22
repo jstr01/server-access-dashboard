@@ -1,7 +1,7 @@
 import os
 import time
 import threading
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from fastapi import (
     FastAPI,
     Depends,
@@ -333,6 +333,177 @@ async def get_summary_by_country(db: Session = Depends(auth.get_db)):
         raise HTTPException(
             status_code=500,
             detail="Internal server error while retrieving country summary.",
+        )
+
+
+# --- Chart data responses ---
+
+
+class TimeSeriesPoint(BaseModel):
+    """One bucketed data point for the time-series chart: accesses
+    for a single domain within one time bucket."""
+
+    bucket: str
+    domain: Optional[str] = None
+    count: int = 0
+
+
+class SiteCountryCount(BaseModel):
+    """One (site, country) pair and how often it was accessed."""
+
+    domain: str
+    country: Optional[str] = None
+    count: int = 0
+
+
+class StatusCount(BaseModel):
+    """One HTTP status-code value and how often it occurred."""
+
+    status_code: Optional[int] = None
+    count: int = 0
+
+
+def _time_window_days(days: int) -> datetime:
+    """Return the UTC cutoff datetime (naive, matching SQLite storage) for the
+    supplied look-back window in days."""
+    days = max(days, 1)
+    return datetime.now(tz=timezone.utc).replace(tzinfo=None) - timedelta(days=days)
+
+
+def _apply_log_filters(query, ip_address, country, domain, status_code):
+    """Apply the shared log-filter predicates to a query (in place)."""
+    if ip_address:
+        query = query.filter(models.LogEntry.ip_address.ilike(f"%{ip_address}%"))
+    if country:
+        query = query.filter(models.LogEntry.country.ilike(f"%{country}%"))
+    if domain:
+        query = query.filter(models.LogEntry.domain.ilike(f"%{domain}%"))
+    if status_code is not None:
+        query = query.filter(models.LogEntry.status_code == status_code)
+    return query
+
+
+# GET /logs/summary/timeseries/
+@app.get(
+    "/logs/summary/timeseries/",
+    response_model=List[TimeSeriesPoint],
+    summary="Bucketed accesses over time per domain",
+    dependencies=[Depends(auth.get_current_user)],
+)
+async def get_timeseries(
+    bucket: str = Query("day", pattern="^(hour|day)$"),
+    days: int = Query(30, ge=1, le=90),
+    domain: Optional[str] = Query(None),
+    country: Optional[str] = Query(None),
+    status_code: Optional[int] = Query(None),
+    db: Session = Depends(auth.get_db),
+):
+    logger.debug("GET /logs/summary/timeseries/ called")
+    try:
+        cutoff = _time_window_days(days)
+        # SQLite exposes strftime() for date/time bucketing; keeping this a single
+        # grouped SELECT avoids pulling raw rows into Python.
+        if bucket == "hour":
+            bucket_expr = func.strftime("%Y-%m-%d %H:00:00", models.LogEntry.timestamp)
+        else:
+            bucket_expr = func.strftime("%Y-%m-%d", models.LogEntry.timestamp)
+        query = (
+            db.query(
+                bucket_expr.label("bucket"),
+                models.LogEntry.domain,
+                func.count(models.LogEntry.id).label("count"),
+            )
+            .filter(models.LogEntry.timestamp >= cutoff)
+            .group_by(bucket_expr, models.LogEntry.domain)
+            .order_by(asc(bucket_expr), asc(models.LogEntry.domain))
+        )
+        query = _apply_log_filters(query, None, country, domain, status_code)
+        return [
+            TimeSeriesPoint(bucket=bucket_str, domain=domain, count=count)
+            for bucket_str, domain, count in query.all()
+        ]
+    except Exception as e:
+        logger.error(f"Error retrieving time-series summary: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error while retrieving time-series summary.",
+        )
+
+
+# GET /logs/summary/by-site-country/
+@app.get(
+    "/logs/summary/by-site-country/",
+    response_model=List[SiteCountryCount],
+    summary="Accesses per site and country",
+    dependencies=[Depends(auth.get_current_user)],
+)
+async def get_summary_by_site_country(
+    days: int = Query(30, ge=1, le=90),
+    domain: Optional[str] = Query(None),
+    country: Optional[str] = Query(None),
+    db: Session = Depends(auth.get_db),
+):
+    logger.debug("GET /logs/summary/by-site-country/ called")
+    try:
+        cutoff = _time_window_days(days)
+        query = (
+            db.query(
+                models.LogEntry.domain,
+                models.LogEntry.country,
+                func.count(models.LogEntry.id).label("count"),
+            )
+            .filter(models.LogEntry.timestamp >= cutoff)
+            .group_by(models.LogEntry.domain, models.LogEntry.country)
+            .order_by(func.count(models.LogEntry.id).desc())
+        )
+        query = _apply_log_filters(query, None, country, domain, None)
+        return [
+            SiteCountryCount(domain=domain, country=country, count=count)
+            for domain, country, count in query.all()
+        ]
+    except Exception as e:
+        logger.error(f"Error retrieving site-country summary: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error while retrieving site-country summary.",
+        )
+
+
+# GET /logs/summary/by-status/
+@app.get(
+    "/logs/summary/by-status/",
+    response_model=List[StatusCount],
+    summary="Accesses per HTTP status code",
+    dependencies=[Depends(auth.get_current_user)],
+)
+async def get_summary_by_status(
+    days: int = Query(30, ge=1, le=90),
+    domain: Optional[str] = Query(None),
+    country: Optional[str] = Query(None),
+    db: Session = Depends(auth.get_db),
+):
+    logger.debug("GET /logs/summary/by-status/ called")
+    try:
+        cutoff = _time_window_days(days)
+        query = (
+            db.query(
+                models.LogEntry.status_code,
+                func.count(models.LogEntry.id).label("count"),
+            )
+            .filter(models.LogEntry.timestamp >= cutoff)
+            .group_by(models.LogEntry.status_code)
+            .order_by(func.count(models.LogEntry.id).desc())
+        )
+        query = _apply_log_filters(query, None, country, domain, None)
+        return [
+            StatusCount(status_code=status_code, count=count)
+            for status_code, count in query.all()
+        ]
+    except Exception as e:
+        logger.error(f"Error retrieving status summary: {e}", exc_info=True)
+        raise HTTPException(
+            status_code=500,
+            detail="Internal server error while retrieving status summary.",
         )
 
 
