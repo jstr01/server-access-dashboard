@@ -1,16 +1,16 @@
 import os
 import time
 import threading
+from datetime import timedelta
 from fastapi import (
     FastAPI,
     Depends,
     HTTPException,
     Query,
     BackgroundTasks,
-    Security,
     status,
 )
-from fastapi.security import APIKeyHeader
+from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import func, asc, desc
@@ -21,35 +21,12 @@ from apscheduler.schedulers.background import BackgroundScheduler
 
 
 from . import models, log_collector
-from .models import LogEntryRead, PaginatedLogResponse
-from .database import init_db, get_db
+from .models import LogEntryRead, PaginatedLogResponse, UserRead
+from .database import init_db, SessionLocal
+from . import auth
 
 logger = log_collector.logger
 scheduler = BackgroundScheduler(daemon=True)
-
-# --- API Key Setup ---
-API_KEY_HEADER = APIKeyHeader(name="X-API-Key", auto_error=False)
-EXPECTED_API_KEY = os.getenv("API_KEY", "default_insecure_key_CHANGE_ME")
-
-if EXPECTED_API_KEY == "default_insecure_key_CHANGE_ME":
-    logger.warning(
-        "!!! SECURITY WARNING: API_KEY environment variable not set or using default value. Please define a secure key! !!!"
-    )
-
-
-async def verify_api_key(api_key_header: Optional[str] = Security(API_KEY_HEADER)):
-    if not api_key_header:
-        logger.warning("API key missing in header.")
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="API key missing in X-API-Key header",
-        )
-    if api_key_header != EXPECTED_API_KEY:
-        logger.warning("Invalid API key received.")
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN, detail="Invalid API key"
-        )
-    return api_key_header
 
 
 # --- Status management for log collection ---
@@ -93,6 +70,13 @@ async def lifespan(app: FastAPI):
     logger.info("Initializing database...")
     init_db()  # Ensure that check_same_thread=False is set in the engine!
     logger.info("Database initialized.")
+
+    db = SessionLocal()
+    try:
+        auth.seed_admin_user(db)
+    finally:
+        db.close()
+
     set_collection_status("idle")  # Initialize status at startup
     try:
         interval_minutes = int(os.getenv("LOG_COLLECTION_INTERVAL_MINUTES", "10"))
@@ -131,8 +115,90 @@ app.add_middleware(
     allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
-    allow_headers=["*", "X-API-Key"],
+    allow_headers=["*"],
 )
+
+# --- Auth Routes ---
+
+
+class TokenResponse(BaseModel):
+    access_token: str
+    refresh_token: str
+    token_type: str = "bearer"
+    expires_in: int
+    user: UserRead
+
+
+@app.post(
+    "/auth/login",
+    response_model=TokenResponse,
+    summary="Obtain access & refresh tokens",
+)
+async def login(
+    form_data: OAuth2PasswordRequestForm = Depends(),
+    db: Session = Depends(auth.get_db),
+):
+    user = db.query(models.User).filter(models.User.username == form_data.username).first()
+    if not user or not auth.verify_password(form_data.password, user.password_hash):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid username or password",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    if not user.is_active:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="User account is disabled",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+    access_token = auth.create_access_token(user.username)
+    refresh_token = auth.create_refresh_token(user.username)
+    return TokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        expires_in=auth.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        user=auth.get_user_read(user),
+    )
+
+
+@app.post(
+    "/auth/refresh",
+    response_model=TokenResponse,
+    summary="Refresh access token using a valid refresh token",
+)
+async def refresh_token(
+    user: models.User = Depends(auth.get_current_refresh_user),
+):
+    access_token = auth.create_access_token(user.username)
+    refresh_token = auth.create_refresh_token(user.username)
+    return TokenResponse(
+        access_token=access_token,
+        refresh_token=refresh_token,
+        expires_in=auth.ACCESS_TOKEN_EXPIRE_MINUTES * 60,
+        user=auth.get_user_read(user),
+    )
+
+
+@app.get(
+    "/auth/me",
+    response_model=UserRead,
+    summary="Get current authenticated user",
+    dependencies=[Depends(auth.get_current_user)],
+)
+async def get_me(
+    user: models.User = Depends(auth.get_current_user),
+):
+    return auth.get_user_read(user)
+
+
+@app.post(
+    "/auth/logout",
+    summary="Logout (client discards tokens)",
+    dependencies=[Depends(auth.get_current_user)],
+)
+async def logout():
+    return {"message": "Logged out"}
+
 
 # --- API Routes ---
 
@@ -142,7 +208,7 @@ app.add_middleware(
     "/collect-logs/",
     status_code=202,
     summary="Manually trigger log collection",
-    dependencies=[Depends(verify_api_key)],
+    dependencies=[Depends(auth.get_current_user)],
 )
 async def trigger_log_collection(background_tasks: BackgroundTasks):
     current_status = get_collection_status()
@@ -169,7 +235,7 @@ class CollectionStatusResponse(BaseModel):
     "/collect-logs/status",
     response_model=CollectionStatusResponse,
     summary="Retrieve current status of log collection",
-    dependencies=[Depends(verify_api_key)],
+    dependencies=[Depends(auth.get_current_user)],
 )
 async def get_log_collection_status():
     current_status = get_collection_status()
@@ -180,18 +246,12 @@ async def get_log_collection_status():
     return CollectionStatusResponse(status=current_status)
 
 
-# PaginatedLogResponse Modell
-class PaginatedLogResponse(BaseModel):
-    logs: List[LogEntryRead]
-    total_count: int
-
-
 # GET /logs/ Endpoint
 @app.get(
     "/logs/",
     response_model=PaginatedLogResponse,
     summary="Retrieve processed log entries",
-    dependencies=[Depends(verify_api_key)],
+    dependencies=[Depends(auth.get_current_user)],
 )
 async def read_logs(
     skip: int = Query(0, ge=0),
@@ -202,7 +262,7 @@ async def read_logs(
     status_code: Optional[int] = Query(None),
     sort_by: Optional[str] = Query("timestamp"),
     sort_dir: Optional[str] = Query("desc"),
-    db: Session = Depends(get_db),
+    db: Session = Depends(auth.get_db),
 ):
     logger.debug("GET /logs/ called...")
     try:
@@ -243,9 +303,9 @@ class CountrySummary(BaseModel):
     "/logs/summary/by-country/",
     response_model=List[CountrySummary],
     summary="Summarize accesses per country",
-    dependencies=[Depends(verify_api_key)],
+    dependencies=[Depends(auth.get_current_user)],
 )
-async def get_summary_by_country(db: Session = Depends(get_db)):
+async def get_summary_by_country(db: Session = Depends(auth.get_db)):
     logger.debug("GET /logs/summary/by-country/ called")
     try:
         summary_query = (
@@ -284,10 +344,16 @@ if __name__ == "__main__":
             print(f"Loaded local .env file from: {dotenv_path}")
         else:
             print("No local .env file found.")
-        EXPECTED_API_KEY = os.getenv("API_KEY", "default_insecure_key_CHANGE_ME")
-        if EXPECTED_API_KEY == "default_insecure_key_CHANGE_ME":
+        # Check JWT_SECRET
+        jwt_secret = os.getenv("JWT_SECRET")
+        if not jwt_secret:
             logger.warning(
-                "!!! API_KEY not found in .env or set to default. Using insecure default! !!!"
+                "!!! JWT_SECRET not set. Using ephemeral random secret — tokens invalid on restart! !!!"
+            )
+        # Check ADMIN_PASSWORD
+        if not os.getenv("ADMIN_PASSWORD"):
+            logger.warning(
+                "!!! ADMIN_PASSWORD not set — no admin user will be seeded! !!!"
             )
     except ImportError:
         print("python-dotenv not installed, .env file will not be loaded.")
