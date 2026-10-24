@@ -1,5 +1,4 @@
 import os
-import time
 import threading
 from datetime import datetime, timedelta, timezone
 from fastapi import (
@@ -19,9 +18,9 @@ from contextlib import asynccontextmanager
 from pydantic import BaseModel
 from apscheduler.schedulers.background import BackgroundScheduler
 
-
+from .security_headers import SecurityHeadersMiddleware
 from . import models, log_collector
-from .models import LogEntryRead, PaginatedLogResponse, UserRead
+from .models import PaginatedLogResponse, UserRead
 from .database import init_db, SessionLocal
 from . import auth
 
@@ -125,6 +124,7 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(SecurityHeadersMiddleware)
 
 # --- Auth Routes ---
 
