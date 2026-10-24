@@ -8,6 +8,7 @@ from fastapi import (
     Query,
     BackgroundTasks,
     status,
+    Request,
 )
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
@@ -152,6 +153,7 @@ class TokenResponse(BaseModel):
 )
 @limiter.limit("3/minute")
 async def login(
+    request:Request,
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(auth.get_db),
 ):
