@@ -106,6 +106,9 @@ app = FastAPI(
     description="API for retrieving and managing server access logs",
     version="1.0.0",
     lifespan=lifespan,
+    docs_url=None,
+    redoc_url=None,
+    openapi_url=None,
 )
 
 # --- CORS Middleware ---
