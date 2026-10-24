@@ -11,6 +11,8 @@ from fastapi import (
 )
 from fastapi.security import OAuth2PasswordRequestForm
 from fastapi.middleware.cors import CORSMiddleware
+from slowapi import Limiter, _rate_limit_exceeded_handler
+from slowapi.errors import RateLimitExceeded
 from sqlalchemy.orm import Session
 from sqlalchemy import func, asc, desc
 from typing import List, Optional
@@ -99,6 +101,8 @@ async def lifespan(app: FastAPI):
     log_collector.close_geoip_reader()
     logger.info("Application stopped.")
 
+# Initialize Limiter
+limiter = Limiter(key_func=lambda request: request.client.host)
 
 app = FastAPI(
     title="Server Access Dashboard API",
@@ -109,6 +113,10 @@ app = FastAPI(
     redoc_url=None,
     openapi_url=None,
 )
+
+# Register the slowapi error handler
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 
 # --- CORS Middleware ---
 # Origins the frontend lives on (cross-origin). Bearer-token auth uses the
@@ -142,6 +150,7 @@ class TokenResponse(BaseModel):
     response_model=TokenResponse,
     summary="Obtain access & refresh tokens",
 )
+@limiter.limit("3/minute")
 async def login(
     form_data: OAuth2PasswordRequestForm = Depends(),
     db: Session = Depends(auth.get_db),
